@@ -28,8 +28,8 @@ from story_engine.characters import (
     DhruvState,
     RanveerPhase,
     RanveerState,
-    SuryaCharacter,
     SuryaState,
+    SuryaAllegiance,
 )
 from story_engine.flags import FlagSet, WorldFlag
 from story_engine.locations import Location, LocationName, get_location
@@ -124,7 +124,7 @@ class StoryInitParams(BaseModel):
     @classmethod
     def validate_surya_state(cls, v: str) -> str:
         try:
-            SuryaState[v]
+            SuryaAllegiance[v]
         except KeyError:
             raise ValueError(f"Unknown SuryaState name: {v!r}")
         return v
@@ -281,7 +281,7 @@ class StoryEngine:
 
         ranveer = RanveerState(phase=RanveerPhase[params.ranveer_phase_start])
         dhruv = DhruvState(cost_benefit_total=params.dhruv_cost_start)
-        surya = SuryaCharacter(true_state=SuryaState[params.surya_true_state])
+        surya = SuryaState(true_state=SuryaAllegiance[params.surya_true_state])
         arjun = ArjunState(arjun_acts_in_window=params.arjun_acts_in_window)
 
         self._state = WorldState(
@@ -368,7 +368,10 @@ class StoryEngine:
             IncidentEntry(
                 step=state.step,
                 trigger_type=trigger.trigger_type.name,
+                variant=trigger.variant.name,
                 location_name=trigger.location.name,
+                initiator=trigger.initiator,
+                target=trigger.target,
                 description=trigger.description,
                 consequence_notes=self._derive_consequence_notes(
                     trigger, multiplier, rajan_escalated, arjun_window
@@ -441,7 +444,9 @@ class StoryEngine:
             public_hits_on_vikram = sum(
                 1
                 for e in state.incident_log
-                if "vikram" in e.description.lower() and e.is_public
+                if e.is_public
+                and e.trigger_type == TriggerType.DIRECT_CHALLENGE.name
+                and e.target == "vikram"
             )
             if (
                 state.conflict_phase
@@ -483,6 +488,28 @@ class StoryEngine:
                 return ResolutionType.R5_STRUCTURAL
 
         return None
+
+    def force_crisis(self, reason: str) -> ConflictPhase:
+        """Advance the conflict phase to CRISIS unconditionally.
+
+        Call this when an irreversible move has been made that cannot be
+        absorbed into normal campus life — a public physical act, an admin
+        expulsion attempt, an exposed Surya plant, etc.
+
+        Unlike phase advancement in ``_handle_direct_challenge``, CRISIS is
+        not automatically derived from a trigger sequence alone; callers invoke
+        this when the narrative decision is made. The engine also advances to
+        CRISIS automatically when Ranveer reaches PERSONAL while conflict is
+        at OPEN_CONFLICT.
+
+        Args:
+            reason: Human-readable note explaining why CRISIS was forced.
+
+        Returns:
+            ``ConflictPhase.CRISIS``.
+        """
+        self.state.conflict_phase = ConflictPhase.CRISIS
+        return self.state.conflict_phase
 
     # ------------------------------------------------------------------
     # Chain rules
@@ -689,7 +716,7 @@ class StoryEngine:
         phase: ConflictPhase,
         confronted: bool,
         operationally_necessary: bool,
-    ) -> SuryaState | None:
+    ) -> SuryaAllegiance | None:
         """RULE_09_SURYA_REVEAL_CONDITION: reveal Surya's true state if warranted.
 
         Reveal when ANY of:
@@ -796,42 +823,99 @@ class StoryEngine:
         elif state.conflict_phase is ConflictPhase.FRICTION and trigger.is_public:
             state.conflict_phase = ConflictPhase.OPEN_CONFLICT
 
+        # Auto-CRISIS: Ranveer at PERSONAL + OPEN_CONFLICT = irreversible territory
+        if (
+            state.ranveer.phase is RanveerPhase.PERSONAL
+            and state.conflict_phase is ConflictPhase.OPEN_CONFLICT
+        ):
+            state.conflict_phase = ConflictPhase.CRISIS
+
     def _handle_institutional_move(self, trigger: Trigger, multiplier: float) -> None:
         """Apply chain rules for TYPE 02 INSTITUTIONAL_MOVE triggers.
 
-        Institutional moves do not automatically advance the conflict phase —
-        their effect is slower and delivered through Dhruv's drift and Neel's
-        capacity (both handled in ``fire_trigger``).
-
-        Kavya threshold updates are the caller's responsibility via
-        ``apply_kavya_threshold()``, since the engine cannot infer whether
-        a specific institutional move has reached her professionally.
+        - ``INSTITUTIONAL_ACADEMIC_THREAT``: sets Kavya's condition A (conflict
+          has reached her professionally through her department).
+        - ``INSTITUTIONAL_ADMINISTRATIVE_ACTION``: advances conflict phase from
+          FRICTION → OPEN_CONFLICT (admin involvement makes the conflict
+          structural).
+        - ``INSTITUTIONAL_NOTICE_BOARD``: public notice board moves initiate
+          FRICTION from COLD_EQUILIBRIUM when witnessed by the student body.
+        - ``INSTITUTIONAL_OPPORTUNITY_DENIAL``: public denial advances phase
+          from FRICTION → OPEN_CONFLICT (Neel's machinery operating openly).
         """
+        state = self.state
+
+        if trigger.variant is TriggerVariant.INSTITUTIONAL_ACADEMIC_THREAT:
+            # Academic threat routes through Kavya's department — condition A met
+            state.kavya.condition_a_met = True
+
+        elif trigger.variant is TriggerVariant.INSTITUTIONAL_ADMINISTRATIVE_ACTION:
+            # Admin summons or formal action makes the conflict structural
+            if state.conflict_phase is ConflictPhase.FRICTION:
+                state.conflict_phase = ConflictPhase.OPEN_CONFLICT
+
+        elif trigger.variant is TriggerVariant.INSTITUTIONAL_NOTICE_BOARD:
+            # Public notice board is witnessed by the student body; ignites friction
+            if (
+                state.conflict_phase is ConflictPhase.COLD_EQUILIBRIUM
+                and trigger.is_public
+            ):
+                state.conflict_phase = ConflictPhase.FRICTION
+
+        elif trigger.variant is TriggerVariant.INSTITUTIONAL_OPPORTUNITY_DENIAL:
+            # Blocking access publicly signals Neel's machinery is operating openly
+            if state.conflict_phase is ConflictPhase.FRICTION and trigger.is_public:
+                state.conflict_phase = ConflictPhase.OPEN_CONFLICT
 
     def _handle_political_move(self, trigger: Trigger, multiplier: float) -> None:
         """Apply chain rules for TYPE 03 POLITICAL_MOVE triggers.
 
-        Political moves work through Neel's machinery. State effects arrive
-        via Dhruv drift and Neel threshold (both handled in ``fire_trigger``).
-        No immediate conflict phase change.
+        - ``POLITICAL_ELECTION_POSITIONING``: during ELECTION_SEASON, public
+          alignment reads initiate FRICTION from COLD_EQUILIBRIUM — campus
+          reads positioning as alignment, whether intended or not.
+        - ``POLITICAL_FACTION_APPROACH``: a faction publicly courting one side
+          makes the conflict structurally visible; advances FRICTION → OPEN_CONFLICT.
+        - Other variants: effects delivered via Dhruv drift and Neel threshold
+          (handled in ``fire_trigger``).
         """
+        state = self.state
+
+        if (
+            trigger.variant is TriggerVariant.POLITICAL_ELECTION_POSITIONING
+            and trigger.is_public
+            and state.conflict_phase is ConflictPhase.COLD_EQUILIBRIUM
+            and state.active_flags.is_active(WorldFlag.ELECTION_SEASON)
+        ):
+            state.conflict_phase = ConflictPhase.FRICTION
+
+        elif (
+            trigger.variant is TriggerVariant.POLITICAL_FACTION_APPROACH
+            and trigger.is_public
+            and state.conflict_phase is ConflictPhase.FRICTION
+        ):
+            state.conflict_phase = ConflictPhase.OPEN_CONFLICT
 
     def _handle_ambient_trigger(self, trigger: Trigger, multiplier: float) -> None:
         """Apply chain rules for TYPE 04 AMBIENT_TRIGGER triggers.
 
-        Meera intersection: no automatic state change — Vikram's response to
-        Meera is undefined by the engine (RULE: undefined if Meera is involved).
-
-        Kavya exposed: threshold update is the caller's responsibility.
-
-        Surya information surface: reveal check is the caller's responsibility
-        via ``check_surya_reveal()``.
-
-        Gang member acts alone with Savar: bumps ``savar.visibility_level`` by 1,
-        signalling something fracturing inside the gang (RULE_04_SAVAR_INVERSION).
+        - ``AMBIENT_GANG_MEMBER_ACTS_ALONE`` (Savar as initiator): bumps
+          ``savar.visibility_level`` by 1 (RULE_04 inversion — high volume
+          signals fracture inside the gang).
+        - ``AMBIENT_KAVYA_EXPOSED``: conflict has reached Kavya in an unavoidable
+          way — sets ``kavya.condition_a_met = True``.
+        - ``AMBIENT_MEERA_INTERSECTION``: no automatic state change — Vikram's
+          response to Meera is undefined by the engine (RULE: undefined if Meera
+          is involved).
+        - ``AMBIENT_INFORMATION_SURFACE`` / ``AMBIENT_OUTSIDE_ACTOR``: no
+          automatic state change — reveal check is the caller's responsibility
+          via ``check_surya_reveal()``.
         """
         state = self.state
 
         if trigger.variant is TriggerVariant.AMBIENT_GANG_MEMBER_ACTS_ALONE:
             if trigger.initiator == "savar":
                 state.savar.visibility_level = min(state.savar.visibility_level + 1, 5)
+
+        elif trigger.variant is TriggerVariant.AMBIENT_KAVYA_EXPOSED:
+            # Conflict has reached Kavya in an unavoidable way — condition A is met
+            state.kavya.condition_a_met = True

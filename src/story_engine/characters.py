@@ -134,7 +134,7 @@ class DhruvDriftState(Enum):
 # ---------------------------------------------------------------------------
 
 
-class SuryaState(Enum):
+class SuryaAllegiance(Enum):
     """Surya's actual allegiance — hidden from every character in the world.
 
     Set at story initialisation via ``surya_true_state`` parameter.
@@ -302,7 +302,7 @@ class RajanState:
 
 
 @dataclass
-class SuryaCharacter:
+class SuryaState:
     """Mutable engine state for Surya, the silent unknown.
 
     ``true_state`` is set at story initialisation and hidden from all
@@ -313,7 +313,7 @@ class SuryaCharacter:
 
     year: Year = Year.SECOND
     core_trait: CoreTrait = CoreTrait.UNKNOWABLE
-    true_state: SuryaState = SuryaState.WITH_VIKRAM
+    true_state: SuryaAllegiance = SuryaAllegiance.WITH_VIKRAM
     """Hidden allegiance. Engine-only until reveal conditions are met."""
     is_revealed: bool = False
     """Flipped by ``check_surya_reveal`` when conditions are satisfied."""

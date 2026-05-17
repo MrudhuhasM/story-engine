@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from story_engine.characters import DhruvDriftState, RanveerPhase, SuryaAllegiance
 from story_engine.locations import LocationName, get_location
 from story_engine.world_state import ConflictPhase, WorldState
 
@@ -93,16 +94,13 @@ class SceneBrief(BaseModel):
 # Generator
 # ---------------------------------------------------------------------------
 
-# Maps each character name to a stable (want, must_not_do) pair for the brief.
-# Values are intentionally character-specific and grounded in the world model.
-_CHARACTER_BRIEF_DATA: dict[str, tuple[str, str]] = {
+# Baseline (want, must_not_do) for characters whose values do NOT vary with state.
+# State-sensitive characters (ranveer, dhruv, surya, meera) are derived in
+# SceneBriefGenerator._character_wants() below.
+_CHARACTER_BRIEF_BASELINE: dict[str, tuple[str, str]] = {
     "vikram": (
         "Maintain position without acknowledging cost",
         "Perform submission or fear",
-    ),
-    "ranveer": (
-        "Author Vikram's visible acknowledgment of his place",
-        "Act without deniability",
     ),
     "neel": (
         "Control outcomes through systems, not personal presence",
@@ -120,25 +118,13 @@ _CHARACTER_BRIEF_DATA: dict[str, tuple[str, str]] = {
         "Maintain the performance of courage for the audience present",
         "Admit the performance is not real",
     ),
-    "dhruv": (
-        "Protect his future; remain useful without committing",
-        "Admit he is already halfway out",
-    ),
     "rajan": (
         "Show up and escalate to whatever the situation allows",
         "Calculate odds or show fear",
     ),
-    "surya": (
-        "Observe without revealing anything ahead of schedule",
-        "Explain himself",
-    ),
     "kavya": (
         "Maintain professional surface; protect her position",
         "Involve herself publicly in Vikram's conflict",
-    ),
-    "meera": (
-        "Move toward her own definition of herself",
-        "Ask Vikram for help as if it costs her nothing",
     ),
 }
 
@@ -273,11 +259,12 @@ class SceneBriefGenerator:
             "kavya": state.kavya.core_trait.name,
             "meera": state.meera.core_trait.name,
         }
+        wants = self._character_wants(state)
         contexts: list[CharacterContext] = []
         for name in present:
-            if name not in _CHARACTER_BRIEF_DATA:
+            if name not in wants:
                 continue
-            want, must_not = _CHARACTER_BRIEF_DATA[name]
+            want, must_not = wants[name]
             contexts.append(
                 CharacterContext(
                     name=name,
@@ -288,6 +275,84 @@ class SceneBriefGenerator:
                 )
             )
         return contexts
+
+    def _character_wants(self, state: WorldState) -> dict[str, tuple[str, str]]:
+        """Return state-derived (want, must_not_do) for every character.
+
+        State-invariant characters draw from ``_CHARACTER_BRIEF_BASELINE``.
+        State-sensitive characters (Ranveer, Dhruv, Surya, Meera) derive their
+        want from ``WorldState`` so that the brief reflects where the character
+        actually is in the story.
+
+        Args:
+            state: Current WorldState.
+
+        Returns:
+            Dict mapping lowercase character name → (want, must_not_do).
+        """
+        # Ranveer: want escalates with phase; must_not flips at PERSONAL
+        if state.ranveer.phase is RanveerPhase.PERSONAL:
+            ranveer_want = (
+                "The specific authored moment — Vikram acknowledging his place, "
+                "witnessed. The outcome no longer matters; the moment is everything."
+            )
+            ranveer_must_not = "Let anyone see how personal this has become"
+        elif state.ranveer.phase is RanveerPhase.OBSESSED:
+            ranveer_want = (
+                "Vikram's visible acknowledgment of his place — "
+                "Ranveer is operating from personal obsession now, not campus order."
+            )
+            ranveer_must_not = "Act without deniability"
+        else:
+            ranveer_want = "Author Vikram's visible acknowledgment of his place"
+            ranveer_must_not = "Act without deniability"
+
+        # Dhruv: want tracks drift state
+        drift = state.dhruv.drift_state
+        if (
+            drift is DhruvDriftState.GONE
+            or drift is DhruvDriftState.MAKING_EXIT_ARRANGEMENTS
+        ):
+            dhruv_want = "Exit cleanly without being seen to leave"
+        elif drift is DhruvDriftState.PRESENT_BUT_UNINVESTED:
+            dhruv_want = "Remain technically present while withdrawing real investment"
+        elif drift is DhruvDriftState.LESS_AVAILABLE:
+            dhruv_want = (
+                "Protect his future; becoming harder to reach without explanation"
+            )
+        else:
+            dhruv_want = "Protect his future; remain useful without committing"
+
+        # Surya: want reflects revealed allegiance; opaque until revealed
+        if state.surya.is_revealed:
+            if state.surya.true_state is SuryaAllegiance.RANVEER_PLANT:
+                surya_want = "Complete the intelligence task; disengage cleanly"
+            elif state.surya.true_state is SuryaAllegiance.OWN_AGENDA:
+                surya_want = "Advance his own position using this conflict as cover"
+            elif state.surya.true_state is SuryaAllegiance.WITH_VIKRAM:
+                surya_want = "Protect Vikram through silence and misdirection"
+            else:
+                surya_want = "Determine what this conflict means for him personally"
+        else:
+            surya_want = "Observe without revealing anything ahead of schedule"
+
+        # Meera: want deepens as she lives through more flags
+        if len(state.meera.flags_lived_through) >= 3:
+            meera_want = (
+                "Define herself against what this campus has tried to make her — "
+                "not opposition to Vikram but independence from the world he inhabits."
+            )
+        else:
+            meera_want = "Move toward her own definition of herself"
+
+        result: dict[str, tuple[str, str]] = {
+            **_CHARACTER_BRIEF_BASELINE,
+            "ranveer": (ranveer_want, ranveer_must_not),
+            "dhruv": (dhruv_want, "Admit he is already halfway out"),
+            "surya": (surya_want, "Explain himself"),
+            "meera": (meera_want, "Ask Vikram for help as if it costs her nothing"),
+        }
+        return result
 
     def _derive_scene_goal(self, state: WorldState) -> str:
         """Return a scene goal string derived from conflict phase."""

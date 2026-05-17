@@ -41,8 +41,8 @@ from story_engine.characters import (
     RanveerPhase,
     RanveerState,
     SavarState,
-    SuryaCharacter,
     SuryaState,
+    SuryaAllegiance,
     VikramState,
     Year,
 )
@@ -165,7 +165,11 @@ class IncidentEntry:
     Args:
         step: Simulation step at which the incident occurred.
         trigger_type: The ``TriggerType`` enum value name (string).
+        variant: The ``TriggerVariant`` enum value name (string).
         location_name: Name of the location where the incident occurred.
+        initiator: Lowercase name of the character who fired the trigger.
+        target: Lowercase name of the primary target, or ``"__diffuse__"``
+            for untargeted triggers.
         description: Human-readable summary of what happened.
         consequence_notes: Downstream effects identified at firing time.
         is_public: Whether the general student body witnessed this.
@@ -173,7 +177,10 @@ class IncidentEntry:
 
     step: int
     trigger_type: str
+    variant: str
     location_name: str
+    initiator: str
+    target: str
     description: str
     consequence_notes: tuple[str, ...] = field(default_factory=tuple)
     is_public: bool = False
@@ -233,7 +240,7 @@ class WorldState:
     savar: SavarState = field(default_factory=SavarState)
     dhruv: DhruvState = field(default_factory=DhruvState)
     rajan: RajanState = field(default_factory=RajanState)
-    surya: SuryaCharacter = field(default_factory=SuryaCharacter)
+    surya: SuryaState = field(default_factory=SuryaState)
     kavya: KavyaState = field(default_factory=KavyaState)
     meera: MeeraState = field(default_factory=MeeraState)
 
@@ -490,7 +497,7 @@ def _rajan_from_dict(d: dict[str, Any]) -> RajanState:
     )
 
 
-def _surya_to_dict(s: SuryaCharacter) -> dict[str, Any]:
+def _surya_to_dict(s: SuryaState) -> dict[str, Any]:
     return {
         "year": s.year.name,
         "core_trait": s.core_trait.name,
@@ -499,11 +506,11 @@ def _surya_to_dict(s: SuryaCharacter) -> dict[str, Any]:
     }
 
 
-def _surya_from_dict(d: dict[str, Any]) -> SuryaCharacter:
-    return SuryaCharacter(
+def _surya_from_dict(d: dict[str, Any]) -> SuryaState:
+    return SuryaState(
         year=Year[d["year"]],
         core_trait=CoreTrait[d["core_trait"]],
-        true_state=SuryaState[d["true_state"]],
+        true_state=SuryaAllegiance[d["true_state"]],
         is_revealed=d["is_revealed"],
     )
 
@@ -566,7 +573,10 @@ def _incident_to_dict(e: IncidentEntry) -> dict[str, Any]:
     return {
         "step": e.step,
         "trigger_type": e.trigger_type,
+        "variant": e.variant,
         "location_name": e.location_name,
+        "initiator": e.initiator,
+        "target": e.target,
         "description": e.description,
         "consequence_notes": list(e.consequence_notes),
         "is_public": e.is_public,
@@ -577,7 +587,10 @@ def _incident_from_dict(d: dict[str, Any]) -> IncidentEntry:
     return IncidentEntry(
         step=d["step"],
         trigger_type=d["trigger_type"],
+        variant=d.get("variant", ""),
         location_name=d["location_name"],
+        initiator=d.get("initiator", ""),
+        target=d.get("target", ""),
         description=d["description"],
         consequence_notes=tuple(d["consequence_notes"]),
         is_public=d["is_public"],
