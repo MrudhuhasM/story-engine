@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from story_engine.characters import DhruvDriftState, RanveerPhase, SuryaAllegiance
 from story_engine.locations import LocationName, get_location
+from story_engine.triggers import NO_TARGET, Trigger, TriggerVariant
 from story_engine.world_state import ConflictPhase, WorldState
 
 
@@ -136,20 +137,30 @@ class SceneBriefGenerator:
     stateless — all information comes from the ``WorldState`` passed to it.
     """
 
-    def generate(self, state: WorldState, location_name: LocationName) -> SceneBrief:
+    def generate(
+        self,
+        state: WorldState,
+        location_name: LocationName,
+        trigger: Trigger | None = None,
+    ) -> SceneBrief:
         """Produce a SceneBrief from current world state at a given location.
 
-        Every field is derived from ``state`` — no placeholder strings and no
-        empty lists. All derivation logic is deterministic.
+        Every field is derived from ``state`` (and optionally ``trigger``) —
+        no placeholder strings and no empty lists. All derivation logic is
+        deterministic.
 
         Args:
             state: The current WorldState snapshot.
             location_name: The location where the scene is set.
+            trigger: The trigger that prompted this scene, if any. Trigger
+                participants are added to ``characters_in_scene``; the trigger
+                variant informs ``scene_goal`` and ``emotional_arc``.
 
         Returns:
             A fully populated SceneBrief ready for LLM prose rendering.
         """
         location = get_location(location_name)
+        last_variant = trigger.variant if trigger is not None else None
 
         world_snap = WorldStateSnapshot(
             active_flags=sorted(f.name for f in state.active_flags.flags),
@@ -159,7 +170,7 @@ class SceneBriefGenerator:
             flag_texture_note=state.active_flags.texture_note(),
         )
 
-        present = self._who_is_present(state, location_name)
+        present = self._who_is_present(state, location_name, trigger)
 
         location_ctx = LocationContext(
             name=location.name.name,
@@ -176,8 +187,8 @@ class SceneBriefGenerator:
             world_state=world_snap,
             location=location_ctx,
             characters_in_scene=self._build_character_contexts(state, present),
-            scene_goal=self._derive_scene_goal(state),
-            emotional_arc=self._derive_emotional_arc(state),
+            scene_goal=self._derive_scene_goal(state, last_variant),
+            emotional_arc=self._derive_emotional_arc(state, last_variant),
             what_must_be_shown_not_told=self._derive_subtext_instructions(state),
             prior_context=prior_ctx,
             prose_notes=self._derive_prose_notes(state),
@@ -189,32 +200,58 @@ class SceneBriefGenerator:
     # ------------------------------------------------------------------
 
     def _who_is_present(
-        self, state: WorldState, location_name: LocationName
+        self,
+        state: WorldState,
+        location_name: LocationName,
+        trigger: Trigger | None = None,
     ) -> list[str]:
-        """Return characters plausibly present at this location given WorldState."""
+        """Return characters plausibly present at this location given WorldState.
+
+        Trigger participants (initiator + target) are added first — they are
+        definitionally present. Location-based additions follow.
+        """
         from story_engine.locations import ControlType
 
         location = get_location(location_name)
         present: list[str] = ["vikram"]  # Vikram is always the POV anchor
 
+        # Trigger participants are definitely present
+        if trigger is not None:
+            if trigger.initiator not in present and trigger.initiator != NO_TARGET:
+                present.append(trigger.initiator)
+            if trigger.target not in present and trigger.target != NO_TARGET:
+                present.append(trigger.target)
+
+        # Location-control additions
         control = location.control
         if control is ControlType.NEEL:
-            present.extend(["neel", "arjun"])
+            for name in ("neel", "arjun"):
+                if name not in present:
+                    present.append(name)
         elif control is ControlType.KARAN:
-            present.append("karan")
+            if "karan" not in present:
+                present.append("karan")
         elif control is ControlType.KAVYA:
-            present.append("kavya")
+            if "kavya" not in present:
+                present.append("kavya")
         elif control is ControlType.MEERA:
-            present.append("meera")
+            if "meera" not in present:
+                present.append("meera")
         elif location_name is LocationName.MAIN_CANTEEN:
-            present.extend(["savar", "dhruv", "rajan"])
+            for name in ("savar", "dhruv", "rajan"):
+                if name not in present:
+                    present.append(name)
         elif location_name in {
             LocationName.BOYS_HOSTEL_BLOCKS,
             LocationName.HOSTEL_ROOF,
         }:
-            present.extend(["rajan", "surya"])
+            for name in ("rajan", "surya"):
+                if name not in present:
+                    present.append(name)
         elif location_name is LocationName.MAIN_GROUND:
-            present.extend(["savar", "rajan"])
+            for name in ("savar", "rajan"):
+                if name not in present:
+                    present.append(name)
 
         # Karan attaches to any direct-conflict location when activated
         if state.karan.is_activated and "karan" not in present:
@@ -354,10 +391,70 @@ class SceneBriefGenerator:
         }
         return result
 
-    def _derive_scene_goal(self, state: WorldState) -> str:
-        """Return a scene goal string derived from conflict phase."""
+    def _derive_scene_goal(
+        self,
+        state: WorldState,
+        last_variant: TriggerVariant | None = None,
+    ) -> str:
+        """Return a scene goal string derived from trigger variant and conflict phase.
+
+        Trigger-specific goals take priority over phase-level goals when the
+        variant is known. Phase-level goals act as a fallback for quiet steps
+        and unknown variants.
+
+        Args:
+            state: Current WorldState.
+            last_variant: The TriggerVariant that fired this step, or None.
+
+        Returns:
+            Scene goal string.
+        """
+        # Trigger-variant-specific goals (checked first)
+        if last_variant is TriggerVariant.DIRECT_CHALLENGE_PHYSICAL_CONFRONTATION:
+            return (
+                "The physical dimension has arrived — show what it costs "
+                "and what it does not resolve. Karan is present for a reason."
+            )
+        if last_variant is TriggerVariant.DIRECT_CHALLENGE_PUBLIC_CALLOUT:
+            return (
+                "The challenge is public and witnessed — the student body is now "
+                "the audience. Show what it means to be seen refusing to back down."
+            )
+        if last_variant is TriggerVariant.INSTITUTIONAL_ACADEMIC_THREAT:
+            return (
+                "An invisible move has been made — the damage is real but "
+                "there is nobody to confront. Show what Vikram does "
+                "with anger that has no valid target."
+            )
+        if last_variant is TriggerVariant.INSTITUTIONAL_ADMINISTRATIVE_ACTION:
+            return (
+                "The institution has become a weapon — show who controls it "
+                "and who it cannot touch."
+            )
+        if last_variant is TriggerVariant.INSTITUTIONAL_NOTICE_BOARD:
+            return (
+                "A public declaration through institutional channels — "
+                "show what it means when the system speaks for someone."
+            )
+        if last_variant is TriggerVariant.POLITICAL_ELECTION_POSITIONING:
+            return (
+                "Everyone is being read as aligned whether they intend it or not — "
+                "show what it costs to appear neutral when the campus is counting sides."
+            )
+        if last_variant is TriggerVariant.AMBIENT_MEERA_INTERSECTION:
+            return (
+                "Meera is present and Vikram's response is undefined — "
+                "show what it looks like when his rules do not apply."
+            )
+        if last_variant is TriggerVariant.AMBIENT_KAVYA_EXPOSED:
+            return (
+                "The conflict has reached Kavya — show the moment before "
+                "she decides whether acting costs less than not acting."
+            )
+
+        # Phase-level fallback
         phase = state.conflict_phase
-        goals: dict[ConflictPhase, str] = {
+        phase_goals: dict[ConflictPhase, str] = {
             ConflictPhase.COLD_EQUILIBRIUM: (
                 "Establish the tension that exists before any move is made — "
                 "the weight of knowing, without the relief of action."
@@ -383,19 +480,67 @@ class SceneBriefGenerator:
                 "show what that silence looks like."
             ),
         }
-        return goals.get(
+        return phase_goals.get(
             phase,
             "Advance the conflict toward its resolution — show what each character is becoming.",
         )
 
-    def _derive_emotional_arc(self, state: WorldState) -> list[str]:
-        """Return beat-by-beat emotional movement derived from conflict phase."""
+    def _derive_emotional_arc(
+        self,
+        state: WorldState,
+        last_variant: TriggerVariant | None = None,
+    ) -> list[str]:
+        """Return beat-by-beat emotional movement derived from trigger and phase.
+
+        A standard 3-beat arc is returned for most cases. Physical confrontations
+        and CRISIS phase both get a 4-beat arc with a break/aftermath beat.
+
+        Args:
+            state: Current WorldState.
+            last_variant: The TriggerVariant that fired this step, or None.
+
+        Returns:
+            Ordered list of arc beat strings.
+        """
         arc = [
             "Opening: the space before anything is said — "
             "what the body knows before the mind does.",
-            "Rising: the moment when what is happening becomes undeniable.",
         ]
-        if state.conflict_phase is ConflictPhase.CRISIS:
+
+        is_physical = (
+            last_variant is TriggerVariant.DIRECT_CHALLENGE_PHYSICAL_CONFRONTATION
+        )
+        is_institutional = last_variant in {
+            TriggerVariant.INSTITUTIONAL_ACADEMIC_THREAT,
+            TriggerVariant.INSTITUTIONAL_ADMINISTRATIVE_ACTION,
+            TriggerVariant.INSTITUTIONAL_NOTICE_BOARD,
+            TriggerVariant.INSTITUTIONAL_OPPORTUNITY_DENIAL,
+        }
+
+        if is_physical:
+            arc.append(
+                "Escalation: the moment the body moves before the mind catches up — "
+                "show what it looks like when Karan's version of loyalty is present."
+            )
+            arc.append(
+                "Break: contact or near-contact — "
+                "the thing that cannot be undone even if nothing formally happens."
+            )
+            arc.append(
+                "Aftermath: Vikram still standing. Karan's unfinished feeling "
+                "is not resolved — show it in what he does not do."
+            )
+        elif is_institutional:
+            arc.append(
+                "Rising: the realisation that the move came through a system — "
+                "there is no face to confront, only a consequence."
+            )
+            arc.append(
+                "Absorption: Vikram cannot respond the way he would respond to a person. "
+                "Show what it costs him to absorb something he cannot make personal."
+            )
+        elif state.conflict_phase is ConflictPhase.CRISIS:
+            arc.append("Rising: the moment when what is happening becomes undeniable.")
             arc.append(
                 "Break: something irreversible has happened — "
                 "neither side can absorb this into the normal rhythm of campus life."
@@ -405,10 +550,12 @@ class SceneBriefGenerator:
                 "who is still in the room, and what they do with their hands."
             )
         else:
+            arc.append("Rising: the moment when what is happening becomes undeniable.")
             arc.append(
                 "Unresolved: the scene ends without resolution — "
                 "the tension carries forward into the next step."
             )
+
         return arc
 
     def _derive_subtext_instructions(self, state: WorldState) -> list[str]:

@@ -390,7 +390,11 @@ class StoryEngine:
         """
         return self.state.to_dict()
 
-    def generate_scene_brief(self, location_name: LocationName) -> SceneBrief:
+    def generate_scene_brief(
+        self,
+        location_name: LocationName,
+        trigger: Trigger | None = None,
+    ) -> SceneBrief:
         """Generate a rich SceneBrief for the current state at the given location.
 
         Delegates to ``SceneBriefGenerator``. All fields are derived from
@@ -398,11 +402,14 @@ class StoryEngine:
 
         Args:
             location_name: The location where the scene will be set.
+            trigger: The trigger that prompted this scene, if any. Used to
+                ensure trigger participants appear in ``characters_in_scene``
+                and to derive trigger-specific scene goal and emotional arc.
 
         Returns:
             A fully populated SceneBrief ready for LLM prose rendering.
         """
-        return SceneBriefGenerator().generate(self.state, location_name)
+        return SceneBriefGenerator().generate(self.state, location_name, trigger)
 
     def advance_state(self, *, time_of_day: TimeOfDay | None = None) -> WorldState:
         """Step the simulation forward by one unit.
@@ -807,8 +814,15 @@ class StoryEngine:
         Fires the pride ratchet (Vikram's PRIDE means he never breaks).
         Activates Karan on physical confrontations.
         Advances conflict phase toward OPEN_CONFLICT.
+
+        Auto-CRISIS only fires when Ranveer was ALREADY at PERSONAL before this
+        trigger — the ratchet that brought him to PERSONAL is not enough on its
+        own. The phase must have been established at a prior step.
         """
         state = self.state
+
+        # Snapshot phase BEFORE ratchet — CRISIS requires pre-existing PERSONAL
+        was_already_personal = state.ranveer.phase is RanveerPhase.PERSONAL
 
         # Pride ratchet — Vikram never submits (CoreTrait.PRIDE)
         self.apply_pride_ratchet(trigger)
@@ -823,11 +837,9 @@ class StoryEngine:
         elif state.conflict_phase is ConflictPhase.FRICTION and trigger.is_public:
             state.conflict_phase = ConflictPhase.OPEN_CONFLICT
 
-        # Auto-CRISIS: Ranveer at PERSONAL + OPEN_CONFLICT = irreversible territory
-        if (
-            state.ranveer.phase is RanveerPhase.PERSONAL
-            and state.conflict_phase is ConflictPhase.OPEN_CONFLICT
-        ):
+        # Auto-CRISIS: only when Ranveer was ALREADY PERSONAL at the start of
+        # this step — one trigger cannot jump from OBSESSED to CRISIS.
+        if was_already_personal and state.conflict_phase is ConflictPhase.OPEN_CONFLICT:
             state.conflict_phase = ConflictPhase.CRISIS
 
     def _handle_institutional_move(self, trigger: Trigger, multiplier: float) -> None:
