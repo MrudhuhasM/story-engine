@@ -8,8 +8,11 @@ For each scene:
   5. Calls the LLM — returns prose + thinking
   6. Returns RenderedScene for caller to review before storing
 
-store_scene() is a separate explicit call so you can read the prose
-before committing it to memory. The step counter advances there.
+store_scene() is a separate explicit call so you can read/edit the
+summary before committing to memory. Step counter advances there.
+
+auto_summarize() makes a focused low-temperature call to convert
+rendered prose into a factual 2-4 sentence memory summary.
 
 Import contract
 ~~~~~~~~~~~~~~~
@@ -46,14 +49,12 @@ class RenderedScene:
         trigger: The trigger fired at this step, or None.
         location_name: Location where the scene was set.
         brief: The SceneBrief used to generate the prose.
-        prose: Rendered prose from the LLM, thinking block excluded.
-        thinking: Content of the model's <think> block, or None.
+        prose: Rendered prose from the LLM.
+        thinking: Content of the model's reasoning block, or None.
         tokens_used: Total tokens consumed, or None if not reported.
-        world_state_snapshot: WorldState.to_dict() at generation time,
-            captured BEFORE advance_state() so it reflects what the
-            prose was actually generated from.
-        enriched_brief: Full brief dict sent to LLM (with memory context).
-            Useful for debugging and future fine-tuning data generation.
+        world_state_snapshot: WorldState.to_dict() captured BEFORE
+            advance_state() — reflects what the prose was generated from.
+        enriched_brief: Full brief dict sent to LLM including memory context.
     """
 
     step: int
@@ -80,8 +81,8 @@ class SceneInput:
         location: Where the scene is set.
         trigger: Trigger to fire before generating. None = quiet step.
         dhruv_event_cost: Override Dhruv's event cost. None = engine default.
-        characters_for_memory: Override which character names are used for
-            the memory retrieval query. Defaults to scene brief participants.
+        characters_for_memory: Override which characters are used for the
+            memory retrieval query. Defaults to scene brief participants.
     """
 
     location: LocationName
@@ -98,44 +99,13 @@ class SceneInput:
 class InferencePipeline:
     """Connects StoryEngine, MemorySystem, PromptBuilder, and LLMClient.
 
-    Typical per-scene loop::
-
-        pipeline = InferencePipeline(engine, memory, llm)
-
-        scene_input = SceneInput(
-            location=LocationName.MAIN_CANTEEN,
-            trigger=make_vikram_refusal(LocationName.MAIN_CANTEEN, "desc"),
-        )
-
-        # Streaming — see thinking and prose live:
-        metadata, stream = pipeline.run_scene_stream(scene_input)
-        prose_parts, thinking_parts = [], []
-        for chunk in stream:
-            if chunk.is_thinking:
-                thinking_parts.append(chunk.token)
-            else:
-                prose_parts.append(chunk.token)
-
-        scene = RenderedScene(
-            step=metadata["step"],
-            trigger=scene_input.trigger,
-            location_name=scene_input.location,
-            brief=metadata["brief"],
-            prose="".join(prose_parts),
-            thinking="".join(thinking_parts) or None,
-            tokens_used=None,
-            world_state_snapshot=metadata["state_snapshot"],
-            enriched_brief=metadata["enriched_brief"],
-        )
-        pipeline.store_scene(scene, summary="...")
-
     Args:
         engine: Pre-initialised StoryEngine.
         memory: MemorySystem instance.
         llm: LLMClient. If None, a default client is constructed.
         max_tokens: Max tokens per scene (thinking + prose combined).
-            3000 is recommended for a thinking model with 8096-token context.
-        temperature: Sampling temperature for prose.
+            3000 is recommended for a thinking model on 8096-context server.
+        temperature: Sampling temperature for prose generation.
     """
 
     def __init__(
@@ -159,14 +129,7 @@ class InferencePipeline:
     # ------------------------------------------------------------------
 
     def run_scene(self, scene_input: SceneInput) -> RenderedScene:
-        """Blocking generation — waits for full response before returning.
-
-        Useful for batch processing or when you don't need live display.
-        Thinking and prose are both available in the returned RenderedScene.
-
-        Does NOT store the scene or advance the step counter.
-        Call store_scene() after reviewing the output.
-        """
+        """Blocking generation. Does NOT store or advance step counter."""
         if scene_input.trigger is not None:
             self._engine.fire_trigger(
                 scene_input.trigger,
@@ -176,16 +139,7 @@ class InferencePipeline:
         brief = self._engine.generate_scene_brief(
             scene_input.location, trigger=scene_input.trigger
         )
-
-        chars = scene_input.characters_for_memory or [
-            c.name for c in brief.characters_in_scene
-        ]
-        enrichment = self._memory.retrieve(
-            characters_present=chars,
-            active_flags=brief.world_state.active_flags,
-            location_name=scene_input.location.name,
-        )
-        enriched = self._memory.enrich_brief(brief, enrichment)
+        enriched = self._build_enriched(brief, scene_input)
         system, user = self._builder.build(enriched)
 
         response = self._llm.generate(
@@ -210,23 +164,15 @@ class InferencePipeline:
         self,
         scene_input: SceneInput,
     ) -> tuple[dict[str, Any], Iterator[StreamChunk]]:
-        """Streaming generation — yields StreamChunk tokens as they arrive.
+        """Streaming generation. Returns (metadata, StreamChunk iterator).
 
-        Each StreamChunk has:
-          chunk.token      — the token text
-          chunk.is_thinking — True = thinking, False = prose
+        StreamChunk.is_thinking=True  → reasoning token (show dim)
+        StreamChunk.is_thinking=False → prose token (show normal)
 
-        The engine fires synchronously before the stream starts.
-        The LLM stream is lazy — only runs when you iterate it.
+        The engine fires and the brief is generated synchronously before
+        the stream starts. Only the LLM call is lazy.
 
-        Returns:
-            (metadata_dict, StreamChunk_iterator)
-
-            metadata keys:
-              step           — engine step counter
-              brief          — SceneBrief
-              enriched_brief — dict sent to LLM
-              state_snapshot — WorldState.to_dict() at call time
+        metadata keys: step, brief, enriched_brief, state_snapshot
         """
         if scene_input.trigger is not None:
             self._engine.fire_trigger(
@@ -237,16 +183,7 @@ class InferencePipeline:
         brief = self._engine.generate_scene_brief(
             scene_input.location, trigger=scene_input.trigger
         )
-
-        chars = scene_input.characters_for_memory or [
-            c.name for c in brief.characters_in_scene
-        ]
-        enrichment = self._memory.retrieve(
-            characters_present=chars,
-            active_flags=brief.world_state.active_flags,
-            location_name=scene_input.location.name,
-        )
-        enriched = self._memory.enrich_brief(brief, enrichment)
+        enriched = self._build_enriched(brief, scene_input)
         system, user = self._builder.build(enriched)
 
         metadata: dict[str, Any] = {
@@ -264,10 +201,6 @@ class InferencePipeline:
 
         return metadata, stream
 
-    # ------------------------------------------------------------------
-    # Storage and step advancement
-    # ------------------------------------------------------------------
-
     def store_scene(
         self,
         scene: RenderedScene,
@@ -277,24 +210,15 @@ class InferencePipeline:
         threads_introduced: list[NarrativeThread] | None = None,
         threads_resolved: list[str] | None = None,
     ) -> None:
-        """Store a rendered scene in memory and advance the engine step counter.
-
-        Always call this after run_scene() or run_scene_stream(). The step
-        counter advance here keeps the engine in sync with memory.
+        """Store scene in memory and advance the engine step counter.
 
         The summary is embedded in the vector store and retrieved for future
-        scenes — write it factually and specifically. What happened. Who did
-        what. What was not said. What was established between characters.
+        scenes. Write it factually: who did what, what was not said, what
+        was established between characters.
 
-        Args:
-            scene: RenderedScene from run_scene() or assembled from stream.
-            summary: 2-4 sentence factual summary of the scene.
-            voice_samples: Optional dialogue/behavior samples to cache.
-            threads_introduced: New unresolved narrative threads.
-            threads_resolved: IDs of threads resolved in this scene.
+        Always call this after run_scene() or run_scene_stream().
         """
         state = scene.world_state_snapshot
-        ranveer_phase = state.get("ranveer", {}).get("phase", "")
 
         self._memory.store_scene(
             MemoryInput(
@@ -304,7 +228,7 @@ class InferencePipeline:
                 characters_present=[c.name for c in scene.brief.characters_in_scene],
                 active_flags=state.get("active_flags", []),
                 conflict_phase=state.get("conflict_phase", ""),
-                ranveer_phase=ranveer_phase,
+                ranveer_phase=state.get("ranveer", {}).get("phase", ""),
                 summary=summary,
                 prose=scene.prose,
                 voice_samples=voice_samples or [],
@@ -315,7 +239,45 @@ class InferencePipeline:
         self._engine.advance_state()
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Auto-summarize
+    # ------------------------------------------------------------------
+
+    def auto_summarize(self, prose: str) -> str:
+        """Generate a factual memory summary from rendered prose.
+
+        Makes a focused low-temperature LLM call. The summary is what
+        gets embedded in the vector store — factual and specific, not
+        a prose paraphrase.
+
+        Returns the summary string. Returns a fallback if the call fails.
+
+        Args:
+            prose: The rendered scene prose to summarize.
+        """
+        system = (
+            "You write factual scene summaries for a story memory system. "
+            "2-4 sentences only. State what happened: who did what, "
+            "what was not said, what was established between characters, "
+            "what changed and what did not. "
+            "No interpretation. No prose flourish. Pure facts of the scene. "
+            "Do not start with 'In this scene' or 'The scene'."
+        )
+        user = f"Summarize this scene:\n\n{prose}"
+
+        try:
+            response = self._llm.generate(
+                system, user,
+                max_tokens=200,
+                temperature=0.2,
+                top_p=0.9,
+            )
+            return response.prose.strip()
+        except Exception:
+            # Fallback: use first 200 chars of prose
+            return prose[:200].strip()
+
+    # ------------------------------------------------------------------
+    # Resolution / state helpers
     # ------------------------------------------------------------------
 
     def check_resolution(self) -> str | None:
@@ -323,15 +285,31 @@ class InferencePipeline:
         result = self._engine.check_resolution_condition()
         return result.name if result is not None else None
 
+    def get_state(self) -> dict[str, Any]:
+        """Return current WorldState as a JSON-safe dict."""
+        return self._engine.get_current_state()
+
+    @property
+    def engine(self) -> StoryEngine:
+        return self._engine
+
+    @property
+    def memory(self) -> MemorySystem:
+        return self._memory
+
+    # ------------------------------------------------------------------
+    # Optional: voice sample extraction
+    # ------------------------------------------------------------------
+
     def extract_voice_samples(
         self,
         scene: RenderedScene,
         *,
         max_tokens: int = 600,
     ) -> list[VoiceSample]:
-        """Optional: extract voice samples via a focused LLM call (temp=0.2).
+        """Extract voice samples via a focused LLM call (temp=0.2).
 
-        Returns empty list on any parse failure rather than raising.
+        Returns empty list on any parse failure.
         """
         characters = [c.name for c in scene.brief.characters_in_scene]
         system = (
@@ -356,16 +334,23 @@ class InferencePipeline:
             step=scene.step,
         )
 
-    @property
-    def engine(self) -> StoryEngine:
-        return self._engine
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
 
-    @property
-    def memory(self) -> MemorySystem:
-        return self._memory
-
-    def get_state(self) -> dict[str, Any]:
-        return self._engine.get_current_state()
+    def _build_enriched(
+        self, brief: SceneBrief, scene_input: SceneInput
+    ) -> dict[str, Any]:
+        """Retrieve memory and merge with brief into enriched dict."""
+        chars = scene_input.characters_for_memory or [
+            c.name for c in brief.characters_in_scene
+        ]
+        enrichment = self._memory.retrieve(
+            characters_present=chars,
+            active_flags=brief.world_state.active_flags,
+            location_name=scene_input.location.name,
+        )
+        return self._memory.enrich_brief(brief, enrichment)
 
     def _parse_voice_samples(
         self, raw_json: str, scene_id: str, step: int
