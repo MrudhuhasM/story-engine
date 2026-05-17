@@ -23,11 +23,11 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import chromadb
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from story_engine.brief_generator import SceneBrief
 
@@ -176,7 +176,7 @@ class SceneRecord(BaseModel):
         threads_resolved: Thread IDs resolved in this scene.
     """
 
-    scene_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    scene_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     step: int
     location_name: str
     characters_present: list[str]
@@ -185,9 +185,9 @@ class SceneRecord(BaseModel):
     ranveer_phase: str
     summary: str
     prose: str
-    voice_samples: list[dict[str, Any]] = []
-    threads_introduced: list[dict[str, Any]] = []
-    threads_resolved: list[str] = []
+    voice_samples: list[dict[str, Any]] = Field(default_factory=list)
+    threads_introduced: list[dict[str, Any]] = Field(default_factory=list)
+    threads_resolved: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -230,9 +230,9 @@ class MemoryInput(BaseModel):
     ranveer_phase: str
     summary: str
     prose: str
-    voice_samples: list[VoiceSample] = []
-    threads_introduced: list[NarrativeThread] = []
-    threads_resolved: list[str] = []
+    voice_samples: list[VoiceSample] = Field(default_factory=list)
+    threads_introduced: list[NarrativeThread] = Field(default_factory=list)
+    threads_resolved: list[str] = Field(default_factory=list)
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -305,7 +305,7 @@ class MemorySystem:
                 path=persist_directory
             )
         else:
-            self._chroma = chromadb.Client()
+            self._chroma = chromadb.EphemeralClient()
 
         self._collection = self._chroma.get_or_create_collection(
             name=collection_name,

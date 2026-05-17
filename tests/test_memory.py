@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import uuid
-
-import pytest
 
 from story_engine.memory import (
     MemoryEnrichment,
@@ -210,9 +209,7 @@ class TestStoreAndRetrieve:
         # After storing one scene, retrieve must not return the empty sentinel.
         assert enrichment.relevant_prior_scenes != ["No prior scenes on record."]
         # The stored summary must appear in the results.
-        assert any(
-            "Ranveer" in s for s in enrichment.relevant_prior_scenes
-        )
+        assert any("Ranveer" in s for s in enrichment.relevant_prior_scenes)
 
     def test_get_scene_returns_stored_record(self) -> None:
         memory = _memory()
@@ -417,9 +414,7 @@ class TestEnrichBrief:
 
 
 class TestSaveLoadState:
-    def test_save_and_load_state_round_trip(
-        self, tmp_path: pytest.TempPathFactory
-    ) -> None:  # type: ignore[override]
+    def test_save_and_load_state_round_trip(self, tmp_path: pathlib.Path) -> None:
         path = str(tmp_path / "memory_state.json")
         memory = _memory()
 
@@ -439,7 +434,7 @@ class TestSaveLoadState:
         assert len(memory2.get_open_threads()) == 1
         assert memory2.get_open_threads()[0].description == "Unresolved look."
 
-    def test_save_state_is_valid_json(self, tmp_path: pytest.TempPathFactory) -> None:  # type: ignore[override]
+    def test_save_state_is_valid_json(self, tmp_path: pathlib.Path) -> None:
         path = str(tmp_path / "state.json")
         memory = _memory()
         memory.store_scene(_memory_input(voice_samples=[_voice_sample()]))
@@ -452,9 +447,7 @@ class TestSaveLoadState:
         assert "open_threads" in data
         assert "current_step" in data
 
-    def test_load_state_restores_step_counter(
-        self, tmp_path: pytest.TempPathFactory
-    ) -> None:  # type: ignore[override]
+    def test_load_state_restores_step_counter(self, tmp_path: pathlib.Path) -> None:
         path = str(tmp_path / "state.json")
         memory = _memory()
         memory.store_scene(_memory_input(step=7))
