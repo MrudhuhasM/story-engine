@@ -47,7 +47,9 @@ class TestTriggerVariantEnum:
         assert len(list(TriggerVariant)) == 17
 
     def test_direct_challenge_variants(self) -> None:
-        names = {v.name for v in TriggerVariant if v.name.startswith("DIRECT_CHALLENGE")}
+        names = {
+            v.name for v in TriggerVariant if v.name.startswith("DIRECT_CHALLENGE")
+        }
         assert names == {
             "DIRECT_CHALLENGE_PUBLIC_HUMILIATION",
             "DIRECT_CHALLENGE_PHYSICAL_CONFRONTATION",
@@ -154,7 +156,10 @@ class TestTriggerDataclass:
 class TestMakePublicHumiliation:
     def test_type_and_variant(self) -> None:
         t = make_public_humiliation(
-            LocationName.MAIN_CANTEEN, "ranveer", "vikram", "Ranveer mocked Vikram's seat."
+            LocationName.MAIN_CANTEEN,
+            "ranveer",
+            "vikram",
+            "Ranveer mocked Vikram's seat.",
         )
         assert t.trigger_type is TriggerType.DIRECT_CHALLENGE
         assert t.variant is TriggerVariant.DIRECT_CHALLENGE_PUBLIC_HUMILIATION
@@ -395,7 +400,8 @@ class TestMakeMeeraIntersection:
 class TestMakeInformationSurface:
     def test_type_and_variant(self) -> None:
         t = make_information_surface(
-            LocationName.HOSTEL_ROOF, "Surya knew about the notice before it was posted."
+            LocationName.HOSTEL_ROOF,
+            "Surya knew about the notice before it was posted.",
         )
         assert t.trigger_type is TriggerType.AMBIENT_TRIGGER
         assert t.variant is TriggerVariant.AMBIENT_INFORMATION_SURFACE
@@ -417,7 +423,9 @@ class TestMakeInformationSurface:
 class TestMakeGangMemberActsAlone:
     def test_type_and_variant(self) -> None:
         t = make_gang_member_acts_alone(
-            "rajan", LocationName.DEAD_PATHS, "Rajan escalated without Vikram's instruction."
+            "rajan",
+            LocationName.DEAD_PATHS,
+            "Rajan escalated without Vikram's instruction.",
         )
         assert t.trigger_type is TriggerType.AMBIENT_TRIGGER
         assert t.variant is TriggerVariant.AMBIENT_GANG_MEMBER_ACTS_ALONE
@@ -428,7 +436,10 @@ class TestMakeGangMemberActsAlone:
 
     def test_explicit_public(self) -> None:
         t = make_gang_member_acts_alone(
-            "savar", LocationName.MAIN_CANTEEN, "Savar said something irreversible.", is_public=True
+            "savar",
+            LocationName.MAIN_CANTEEN,
+            "Savar said something irreversible.",
+            is_public=True,
         )
         assert t.is_public is True
 

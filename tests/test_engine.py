@@ -196,7 +196,9 @@ class TestApplyPrideRatchet:
         phase = init_engine.apply_pride_ratchet(trigger)
         assert phase is RanveerPhase.IRRITATED
 
-    def test_consecutive_non_submissions_tracked(self, init_engine: StoryEngine) -> None:
+    def test_consecutive_non_submissions_tracked(
+        self, init_engine: StoryEngine
+    ) -> None:
         trigger = make_vikram_refusal(LocationName.MAIN_CANTEEN, "desc")
         init_engine.apply_pride_ratchet(trigger)
         assert init_engine.state.ranveer.consecutive_unacknowledged_non_submissions == 1
@@ -210,12 +212,16 @@ class TestApplyPrideRatchet:
         phase = init_engine.apply_pride_ratchet(trigger, is_apparent_weakness=True)
         assert phase is RanveerPhase.COLD
 
-    def test_apparent_weakness_sets_strategy_flag(self, init_engine: StoryEngine) -> None:
+    def test_apparent_weakness_sets_strategy_flag(
+        self, init_engine: StoryEngine
+    ) -> None:
         trigger = make_vikram_refusal(LocationName.MAIN_CANTEEN, "desc")
         init_engine.apply_pride_ratchet(trigger, is_apparent_weakness=True)
         assert init_engine.state.ranveer.last_weakness_was_strategy is True
 
-    def test_non_submission_clears_strategy_flag(self, init_engine: StoryEngine) -> None:
+    def test_non_submission_clears_strategy_flag(
+        self, init_engine: StoryEngine
+    ) -> None:
         trigger = make_vikram_refusal(LocationName.MAIN_CANTEEN, "desc")
         # Set the flag first
         init_engine.apply_pride_ratchet(trigger, is_apparent_weakness=True)
@@ -267,7 +273,9 @@ class TestApplyVisibilityMultiplier:
         loc = get_location(LocationName.MAIN_GROUND)
         assert init_engine.apply_visibility_multiplier(trigger, loc) == 1.0
 
-    def test_public_trigger_at_main_canteen_doubles(self, init_engine: StoryEngine) -> None:
+    def test_public_trigger_at_main_canteen_doubles(
+        self, init_engine: StoryEngine
+    ) -> None:
         from story_engine.locations import get_location
 
         trigger = make_public_humiliation(
@@ -276,7 +284,9 @@ class TestApplyVisibilityMultiplier:
         loc = get_location(LocationName.MAIN_CANTEEN)
         assert init_engine.apply_visibility_multiplier(trigger, loc) == 2.0
 
-    def test_public_trigger_at_dead_paths_is_one(self, init_engine: StoryEngine) -> None:
+    def test_public_trigger_at_dead_paths_is_one(
+        self, init_engine: StoryEngine
+    ) -> None:
         from story_engine.locations import get_location
 
         # DEAD_PATHS visibility is NONE → multiplier = 1.0
@@ -325,7 +335,10 @@ class TestApplyDhruvDrift:
     def test_six_negatives_advance_two_steps(self, init_engine: StoryEngine) -> None:
         for _ in range(6):
             init_engine.apply_dhruv_drift(-1.0)
-        assert init_engine.state.dhruv.drift_state is DhruvDriftState.PRESENT_BUT_UNINVESTED
+        assert (
+            init_engine.state.dhruv.drift_state
+            is DhruvDriftState.PRESENT_BUT_UNINVESTED
+        )
 
     def test_gone_is_terminal(self, engine: StoryEngine) -> None:
         engine.initialize_story(_default_params())
@@ -609,7 +622,9 @@ class TestFireTrigger:
         init_engine.fire_trigger(trigger)
         assert init_engine.state.karan.is_activated is True
 
-    def test_dhruv_contact_applies_positive_cost(self, init_engine: StoryEngine) -> None:
+    def test_dhruv_contact_applies_positive_cost(
+        self, init_engine: StoryEngine
+    ) -> None:
         before = init_engine.state.dhruv.cost_benefit_total
         trigger = make_dhruv_contact("Neel offered Dhruv something.")
         init_engine.fire_trigger(trigger)
@@ -844,7 +859,9 @@ class TestCrisisSequencing:
                 initial_conflict_phase="OPEN_CONFLICT",
             )
         )
-        trigger = make_vikram_refusal(LocationName.MAIN_CANTEEN, "Vikram refuses again.")
+        trigger = make_vikram_refusal(
+            LocationName.MAIN_CANTEEN, "Vikram refuses again."
+        )
         engine.fire_trigger(trigger)
 
         # Now CRISIS is valid because Ranveer was ALREADY at PERSONAL.
@@ -922,7 +939,9 @@ class TestRanveerPresenceInBrief:
         engine.initialize_story(_default_params())
         # neel is naturally at STUDENT_UNION_BUILDING (Neel controls it)
         trigger = make_election_positioning("Neel positioned a candidate.")
-        brief = engine.generate_scene_brief(LocationName.STUDENT_UNION_BUILDING, trigger)
+        brief = engine.generate_scene_brief(
+            LocationName.STUDENT_UNION_BUILDING, trigger
+        )
         names = [c.name for c in brief.characters_in_scene]
         neel_count = names.count("neel")
         assert neel_count == 1

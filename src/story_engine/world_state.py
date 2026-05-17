@@ -165,23 +165,26 @@ class IncidentEntry:
     Args:
         step: Simulation step at which the incident occurred.
         trigger_type: The ``TriggerType`` enum value name (string).
-        variant: The ``TriggerVariant`` enum value name (string).
         location_name: Name of the location where the incident occurred.
-        initiator: Lowercase name of the character who fired the trigger.
-        target: Lowercase name of the primary target, or ``"__diffuse__"``
-            for untargeted triggers.
         description: Human-readable summary of what happened.
+        variant: The ``TriggerVariant`` enum value name (string).
+            Defaults to ``""`` for backward-compatible construction.
+        initiator: Lowercase name of the character who fired the trigger.
+            Defaults to ``""`` for backward-compatible construction.
+        target: Lowercase name of the primary target, or ``"__diffuse__"``
+            for untargeted triggers. Defaults to ``""`` for backward-compatible
+            construction.
         consequence_notes: Downstream effects identified at firing time.
         is_public: Whether the general student body witnessed this.
     """
 
     step: int
     trigger_type: str
-    variant: str
     location_name: str
-    initiator: str
-    target: str
     description: str
+    variant: str = ""
+    initiator: str = ""
+    target: str = ""
     consequence_notes: tuple[str, ...] = field(default_factory=tuple)
     is_public: bool = False
 

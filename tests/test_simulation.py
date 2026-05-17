@@ -54,7 +54,9 @@ def _refusal_step(
     )
 
 
-def _humiliation_step(brief_location: LocationName = LocationName.MAIN_CANTEEN) -> SimulationStep:
+def _humiliation_step(
+    brief_location: LocationName = LocationName.MAIN_CANTEEN,
+) -> SimulationStep:
     return SimulationStep(
         trigger=make_public_humiliation(
             LocationName.MAIN_CANTEEN, "ranveer", "vikram", "Ranveer mocked Vikram."
@@ -194,9 +196,7 @@ class TestStepRecordContents:
         result = runner.run([_refusal_step()])
         assert result.step_records[0].conflict_phase_after == "FRICTION"
 
-    def test_ranveer_phase_after_non_submission(
-        self, runner: SimulationRunner
-    ) -> None:
+    def test_ranveer_phase_after_non_submission(self, runner: SimulationRunner) -> None:
         # COLD → IRRITATED after first non-submission
         result = runner.run([_refusal_step()])
         assert result.step_records[0].ranveer_phase_after == "IRRITATED"
@@ -342,8 +342,7 @@ class TestResolutionDetection:
 
         # Need to reach step >= 6; quiet steps don't change conflict phase
         steps = [
-            SimulationStep(brief_location=LocationName.MAIN_CANTEEN)
-            for _ in range(8)
+            SimulationStep(brief_location=LocationName.MAIN_CANTEEN) for _ in range(8)
         ]
         result = runner.run(steps, stop_on_resolution=True)
         assert result.resolution_met == "R4_SUSPENDED"
