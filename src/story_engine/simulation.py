@@ -255,7 +255,10 @@ class SimulationRunner:
                 )
 
             # 2. Generate brief
-            brief = self._engine.generate_scene_brief(scheduled.brief_location)
+            brief = self._engine.generate_scene_brief(
+                scheduled.brief_location,
+                trigger=scheduled.trigger,
+            )
 
             # 3. Snapshot state
             state = self._engine.state

@@ -12,4 +12,3 @@ wheels/
 story_world/
 .pytest_cache/
 .ruff_cache/
-tests/
