@@ -1,18 +1,17 @@
 """PromptBuilder: converts an enriched SceneBrief dict into LLM messages.
 
-The enriched dict comes from MemorySystem.enrich_brief(), which merges
-a SceneBrief with memory context (prior scenes, voice samples, threads).
+The previous version rendered the brief as labeled sections (CHARACTERS,
+CONSTRAINTS, EMOTIONAL ARC) — a structured form. This caused the model
+to write like it was filling out a form: mechanical, repetitive, checked.
 
-Produces two strings:
-  system_prompt — role definition, register, hard craft constraints
-  user_prompt   — the full scene brief rendered as structured text
+This version renders the brief as a director's note:
+  - What is happening in this specific scene
+  - What the scene is doing beneath the surface
+  - Physical specifics that anchor the prose
+  - Memory context woven in naturally
 
-Token budget target for an 8096-context server:
-  System prompt:     ~400 tokens
-  Scene brief:      ~1200 tokens
-  Memory context:    ~700 tokens
-  Output (prose):   ~1800 tokens
-  Total:            ~4100 / 8096  (leaves headroom for longer scenes)
+The system prompt is short — establishes world and voice, then gets out
+of the way. Rules in a system prompt become ceilings, not floors.
 
 Import contract
 ~~~~~~~~~~~~~~~
@@ -26,48 +25,81 @@ from typing import Any
 
 
 # ---------------------------------------------------------------------------
-# Retrieval caps (keeps memory section within token budget)
+# Caps on memory context (keeps prompt within token budget)
 # ---------------------------------------------------------------------------
 
-_MAX_PRIOR_SCENES = 3    # scene summaries to include from vector store
-_MAX_VOICE_SAMPLES = 2   # samples per character
-_MAX_THREADS = 4         # open narrative threads to surface
+_MAX_PRIOR_SCENES = 3
+_MAX_VOICE_SAMPLES = 2
+_MAX_THREADS = 3
 
 
 # ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
 
-# This is sent as the system message on every generation call.
-# It establishes the renderer role and hard craft constraints.
-# Kept short to preserve context budget for the scene brief.
+# Short. Establishes world, central conflict, and voice.
+# No rule lists — rules become ceilings.
 
 _SYSTEM_PROMPT = """\
-You are a prose renderer for a literary fiction engine set at a Hindi-medium \
-Indian college campus. Your task is to write one scene as polished literary prose.
+You are writing scenes for a literary novel set at a Hindi-medium Indian \
+college campus. The central conflict is between Vikram (second year, \
+CoreTrait: PRIDE — cannot submit, cannot be seen to acknowledge his place) \
+and Ranveer (third year, CoreTrait: CRUEL AND CALCULATIVE — wants the \
+authored humiliation, not just the outcome).
 
-You receive a structured scene brief: world state, location, characters, \
-scene goal, emotional arc, subtext instructions, memory context. \
-You render this as a scene. You do not summarise, plan, or explain. You write.
+The campus is always present as witness. Hierarchy is physical: \
+who sits where, who moves first, who does not move at all.
 
-CRAFT CONSTRAINTS — NON-NEGOTIABLE
+Voice: Close third person, Vikram's interiority — without his explanation \
+of it. Dialogue is spare. Silence is load-bearing. No character explains \
+their motivation. Time moves slower in confrontation.
 
-Point of view: Close third, Vikram's interiority, without his explanation of it.
-Show not tell: Subtext instructions are hard constraints, not suggestions.
-Silence: What is not said is as load-bearing as what is said. \
-Dialogue is spare.
-Motivation: No character explains their own motivation. Ever.
-Time: Moves slower in confrontation. Do not rush the beat.
-Campus: Always present as ambient sound and peripheral movement — \
-it witnesses even when characters wish it did not.
-Resolution: The scene ends without resolution unless the brief specifies \
-otherwise. Carry the tension forward.
-
-OUTPUT FORMAT
-
-Prose only. No scene title. No chapter header. No authorial commentary. \
-Begin mid-scene. End when the beat is complete.\
+Write the scene only. No title. No scene header. Begin mid-scene.\
 """
+
+
+# ---------------------------------------------------------------------------
+# Conflict phase and Ranveer phase — written as plain language
+# ---------------------------------------------------------------------------
+
+_CONFLICT_PHASE_NOTE: dict[str, str] = {
+    "COLD_EQUILIBRIUM": (
+        "The conflict has not broken open yet. Both sides know what is happening. "
+        "Neither has moved visibly."
+    ),
+    "FRICTION":         (
+        "The first moves have been made. Both sides have responded. "
+        "No irreversible act yet — but the campus is reading the situation."
+    ),
+    "OPEN_CONFLICT":    (
+        "The conflict is publicly known. Faculty are aware. "
+        "Both sides are spending something."
+    ),
+    "CRISIS":           (
+        "An irreversible move has been made. This cannot be absorbed "
+        "into normal campus life."
+    ),
+    "PYRRHIC":          (
+        "Both sides paid. Nobody won. The campus knows this even if no one says it."
+    ),
+    "RESOLUTION_ONE_SIDE_UP": (
+        "A winner is visible to campus without anyone naming it. "
+        "The silence is the acknowledgment."
+    ),
+}
+
+_RANVEER_PHASE_NOTE: dict[str, str] = {
+    "COLD":     "Vikram is an irregularity to Ranveer. Will be corrected.",
+    "IRRITATED":"Vikram has become an irritant. Ranveer is paying attention now.",
+    "OBSESSED": (
+        "Ranveer is operating from personal obsession, not campus order. "
+        "He would never say this. Everyone can see it."
+    ),
+    "PERSONAL": (
+        "Vikram is the only thing on this campus that matters to Ranveer right now. "
+        "The outcome no longer matters — the moment is everything."
+    ),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -78,187 +110,219 @@ Begin mid-scene. End when the beat is complete.\
 class PromptBuilder:
     """Converts an enriched SceneBrief dict into (system_prompt, user_prompt).
 
-    The enriched dict is the output of ``MemorySystem.enrich_brief()``:
-    a SceneBrief serialised to dict, with an additional ``"memory"`` key
-    containing prior scenes, voice samples, and open threads.
-
-    Usage::
-
-        builder = PromptBuilder()
-        system, user = builder.build(enriched_brief_dict)
-        response = llm_client.generate(system, user)
+    The user prompt is a director's note: what is happening, what it means
+    beneath the surface, who is present and what they are carrying.
     """
 
     def build(self, enriched: dict[str, Any]) -> tuple[str, str]:
-        """Return ``(system_prompt, user_prompt)`` ready for ``LLMClient.generate()``.
-
-        Args:
-            enriched: Output of ``MemorySystem.enrich_brief()``.
-
-        Returns:
-            Two strings: system prompt and user prompt.
-        """
-        return _SYSTEM_PROMPT.strip(), self._build_user_prompt(enriched)
+        return _SYSTEM_PROMPT.strip(), self._build_user(enriched)
 
     # ------------------------------------------------------------------
-    # User prompt assembly
+    # User prompt
     # ------------------------------------------------------------------
 
-    def _build_user_prompt(self, d: dict[str, Any]) -> str:
-        sections: list[str] = []
+    def _build_user(self, d: dict[str, Any]) -> str:
+        parts: list[str] = []
 
-        sections.append(self._render_world_state(d.get("world_state", {})))
-        sections.append(self._render_location(d.get("location", {})))
-        sections.append(self._render_characters(d.get("characters_in_scene", [])))
-        sections.append(self._render_scene_goal(d.get("scene_goal", "")))
-        sections.append(self._render_emotional_arc(d.get("emotional_arc", [])))
-        sections.append(self._render_subtext(d.get("what_must_be_shown_not_told", [])))
-        sections.append(self._render_prior_context(d.get("prior_context", [])))
-        sections.append(self._render_constraints(d.get("what_must_not_happen", [])))
-        sections.append(self._render_prose_notes(d.get("prose_notes", {})))
-
+        ws = d.get("world_state", {})
+        loc = d.get("location", {})
+        chars = d.get("characters_in_scene", [])
+        goal = d.get("scene_goal", "")
+        subtext = d.get("what_must_be_shown_not_told", [])
+        prior = d.get("prior_context", [])
+        must_not = d.get("what_must_not_happen", [])
+        prose_notes = d.get("prose_notes", {})
         memory = d.get("memory", {})
-        if memory:
-            mem_section = self._render_memory(memory)
-            if mem_section:
-                sections.append(mem_section)
 
-        # Filter empty sections, join with double newline
-        return "\n\n".join(s for s in sections if s and s.strip())
+        # --- Line 1: step context ---
+        step_line = self._step_context(ws, loc)
+        if step_line:
+            parts.append(step_line)
+
+        # --- Scene situation: what is literally happening ---
+        situation = self._scene_situation(goal, loc, chars, ws)
+        if situation:
+            parts.append(situation)
+
+        # --- Characters: who is here and what they are carrying ---
+        char_block = self._character_block(chars, ws)
+        if char_block:
+            parts.append(char_block)
+
+        # --- Beneath the surface: subtext instructions ---
+        subtext_block = self._subtext_block(subtext)
+        if subtext_block:
+            parts.append(subtext_block)
+
+        # --- What must not happen — folded into a single sentence ---
+        constraint_note = self._constraint_note(must_not)
+        if constraint_note:
+            parts.append(constraint_note)
+
+        # --- Prior context ---
+        prior_block = self._prior_block(prior)
+        if prior_block:
+            parts.append(prior_block)
+
+        # --- Memory: prior scenes + voice samples + threads ---
+        memory_block = self._memory_block(memory)
+        if memory_block:
+            parts.append(memory_block)
+
+        # --- Register note (only if pressurised) ---
+        register = prose_notes.get("prose_register", "")
+        if register == "pressurised":
+            parts.append(
+                "The register is pressurised — every exchange carries weight. "
+                "Do not let the scene relax."
+            )
+
+        parts.append("Write the scene.")
+
+        return "\n\n".join(p for p in parts if p.strip())
 
     # ------------------------------------------------------------------
-    # Section renderers — one per SceneBrief field
+    # Section builders
     # ------------------------------------------------------------------
 
-    def _render_world_state(self, ws: dict[str, Any]) -> str:
-        if not ws:
-            return ""
-        lines = ["WORLD STATE"]
-        lines.append(
-            f"Conflict: {ws.get('conflict_phase', '?')}  |  "
-            f"Ranveer: {ws.get('ranveer_phase', '?')}  |  "
-            f"Time: {ws.get('time_of_day', '?')}"
-        )
-        flags = ws.get("active_flags", [])
-        if flags:
-            lines.append(f"Flags: {', '.join(flags)}")
-        note = ws.get("flag_texture_note")
-        if note:
-            lines.append(f"Note: {note}")
+    def _step_context(self, ws: dict, loc: dict) -> str:
+        """One-line orientation: location, conflict phase, time."""
+        loc_name   = loc.get("name", "")
+        time_name  = ws.get("time_of_day", "").lower().replace("_", " ")
+        phase      = ws.get("conflict_phase", "")
+        ranveer_ph = ws.get("ranveer_phase", "")
+        flags      = ws.get("active_flags", [])
+
+        phase_note   = _CONFLICT_PHASE_NOTE.get(phase, "")
+        ranveer_note = _RANVEER_PHASE_NOTE.get(ranveer_ph, "")
+
+        lines = [f"{loc_name} — {time_name}."]
+        if phase_note:
+            lines.append(phase_note)
+        if ranveer_note:
+            lines.append(f"Ranveer: {ranveer_note}")
+        if ws.get("flag_texture_note"):
+            lines.append(ws["flag_texture_note"])
+
         return "\n".join(lines)
 
-    def _render_location(self, loc: dict[str, Any]) -> str:
-        if not loc:
-            return ""
-        lines = [f"LOCATION: {loc.get('name', '?')}"]
-        lines.append(
-            f"Control: {loc.get('control', '?')}  |  "
-            f"Visibility: {loc.get('visibility', '?')}"
-        )
-        present = loc.get("who_is_present", [])
-        if present:
-            lines.append(f"Present: {', '.join(present)}")
-        return "\n".join(lines)
-
-    def _render_characters(self, chars: list[dict[str, Any]]) -> str:
-        if not chars:
-            return ""
-        lines = ["CHARACTERS"]
-        for c in chars:
-            name = c.get("name", "?").upper()
-            trait = c.get("core_trait", "?")
-            lines.append(f"\n{name} [{trait}]")
-            lines.append(f"  State: {c.get('current_state', '?')}")
-            lines.append(f"  Want: {c.get('want', '?')}")
-            lines.append(f"  Must not: {c.get('must_not_do', '?')}")
-        return "\n".join(lines)
-
-    def _render_scene_goal(self, goal: str) -> str:
+    def _scene_situation(
+        self, goal: str, loc: dict, chars: list, ws: dict
+    ) -> str:
+        """The scene goal rewritten as what is literally happening."""
         if not goal:
             return ""
-        return f"SCENE GOAL\n{goal}"
 
-    def _render_emotional_arc(self, arc: list[str]) -> str:
-        if not arc:
-            return ""
-        lines = ["EMOTIONAL ARC"]
-        for i, beat in enumerate(arc, 1):
-            lines.append(f"{i}. {beat}")
+        # The goal from brief_generator is already a directive sentence.
+        # Prepend the physical anchor: who is present and where.
+        present = loc.get("who_is_present", [])
+        control = loc.get("control", "")
+
+        lines = []
+
+        # Physical setting
+        if present:
+            present_str = ", ".join(p.title() for p in present)
+            lines.append(f"Present: {present_str}.")
+
+        if control:
+            lines.append(f"This space is {control.lower().replace('_', ' ')} territory.")
+
+        lines.append("")
+        lines.append(goal)
+
         return "\n".join(lines)
 
-    def _render_subtext(self, instructions: list[str]) -> str:
+    def _character_block(self, chars: list, ws: dict) -> str:
+        """What each character is carrying into this scene — written naturally."""
+        if not chars:
+            return ""
+
+        lines = ["Who is here and what they are carrying:"]
+        lines.append("")
+
+        for c in chars:
+            name = c.get("name", "?")
+            want = c.get("want", "")
+            current = c.get("current_state", "")
+            must_not = c.get("must_not_do", "")
+
+            # Write as one or two plain sentences, not as labeled fields
+            char_line = f"{name.title()}:"
+
+            if want:
+                char_line += f" {want}."
+            if must_not:
+                char_line += f" Will not: {must_not.lower()}."
+
+            lines.append(char_line)
+
+        return "\n".join(lines)
+
+    def _subtext_block(self, instructions: list[str]) -> str:
+        """Show-not-tell instructions written as observations, not rules."""
         if not instructions:
             return ""
-        lines = ["SHOW NOT TELL"]
+
+        lines = ["What must be visible without being stated:"]
         for item in instructions:
-            lines.append(f"- {item}")
+            lines.append(f"— {item}")
         return "\n".join(lines)
 
-    def _render_prior_context(self, context: list[str]) -> str:
-        if not context:
-            return ""
-        lines = ["PRIOR CONTEXT"]
-        for item in context:
-            lines.append(f"- {item}")
-        return "\n".join(lines)
-
-    def _render_constraints(self, constraints: list[str]) -> str:
+    def _constraint_note(self, constraints: list[str]) -> str:
+        """Hard constraints folded into a brief note rather than a list."""
         if not constraints:
             return ""
-        lines = ["CONSTRAINTS"]
-        for item in constraints:
-            lines.append(f"- {item}")
-        return "\n".join(lines)
+        # Take the most important ones (first 3) and write them as a note
+        key = constraints[:3]
+        return "Hard constraints: " + " / ".join(k.rstrip(".") for k in key) + "."
 
-    def _render_prose_notes(self, notes: dict[str, Any]) -> str:
-        if not notes:
+    def _prior_block(self, prior: list[str]) -> str:
+        """What happened before this scene."""
+        real = [
+            p for p in prior
+            if p and "No prior incidents" not in p
+        ]
+        if not real:
             return ""
-        lines = ["PROSE NOTES"]
-        register = notes.get("prose_register")
-        pov = notes.get("pov")
-        craft = notes.get("craft_instructions", [])
-        if register:
-            lines.append(f"Register: {register}")
-        if pov:
-            lines.append(f"POV: {pov}")
-        for instruction in craft:
-            lines.append(f"- {instruction}")
+
+        lines = ["What came before:"]
+        for item in real:
+            lines.append(f"— {item}")
         return "\n".join(lines)
 
-    def _render_memory(self, memory: dict[str, Any]) -> str:
-        """Render memory context section. Returns empty string if nothing useful."""
-        sections: list[str] = []
+    def _memory_block(self, memory: dict) -> str:
+        """Prior scenes and voice samples woven into natural prose direction."""
+        if not memory:
+            return ""
 
+        parts: list[str] = []
+
+        # Prior scenes
         prior = memory.get("relevant_prior_scenes", [])
-        sentinel = ["No prior scenes on record.", "No relevant prior scenes found."]
-        useful_prior = [s for s in prior if s not in sentinel]
-        if useful_prior:
-            sections.append("Prior scenes:")
-            for summary in useful_prior[:_MAX_PRIOR_SCENES]:
-                # Indent each line of the summary for readability
-                indented = "\n".join(f"  {line}" for line in summary.splitlines())
-                sections.append(indented)
+        sentinels = {"No prior scenes on record.", "No relevant prior scenes found."}
+        useful = [s for s in prior if s not in sentinels]
+        if useful:
+            parts.append("From memory — scenes that bear on this one:")
+            for s in useful[:_MAX_PRIOR_SCENES]:
+                parts.append(f"  {s}")
 
+        # Voice samples — anchor the model to how these characters have been written
         voice = memory.get("character_voice_samples", {})
         if voice:
-            sections.append("Voice samples (anchor your prose to these):")
+            parts.append("How these characters have been written before:")
             for char, samples in voice.items():
-                if not samples:
-                    continue
-                sections.append(f"  {char.upper()}:")
                 for s in samples[:_MAX_VOICE_SAMPLES]:
                     if s.get("dialogue"):
-                        sections.append(f'    said: "{s["dialogue"]}"')
+                        parts.append(f'  {char.title()} said: "{s["dialogue"]}"')
                     if s.get("behavior"):
-                        sections.append(f"    did: {s['behavior']}")
+                        parts.append(f"  {char.title()} did: {s['behavior']}")
 
+        # Open threads
         threads = memory.get("open_narrative_threads", [])
         if threads:
-            sections.append("Open threads (honor or acknowledge these):")
+            parts.append("Narrative threads still open:")
             for t in threads[:_MAX_THREADS]:
-                sections.append(f"  - {t}")
+                parts.append(f"  — {t}")
 
-        if not sections:
-            return ""
-
-        return "MEMORY CONTEXT\n" + "\n".join(sections)
+        return "\n".join(parts) if parts else ""
